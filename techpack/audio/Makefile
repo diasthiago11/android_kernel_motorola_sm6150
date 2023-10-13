@@ -90,6 +90,10 @@ ifeq ($(CONFIG_MINSK_DTB), y)
 LINUXINCLUDE    += \
                 -include $(srctree)/techpack/audio/config/minskautoconf.h
 endif
+ifeq ($(CONFIG_HANOIP_DTB), y)
+LINUXINCLUDE    += \
+                -include $(srctree)/techpack/audio/config/hanoiautoconf.h
+endif
 
 obj-y += soc/
 obj-y += dsp/
