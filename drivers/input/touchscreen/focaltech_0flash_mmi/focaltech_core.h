@@ -61,7 +61,6 @@
 #include <linux/sched.h>
 #include <linux/kthread.h>
 #include <linux/dma-mapping.h>
-#include <linux/pm_qos.h>
 #include "focaltech_common.h"
 #ifdef FTS_USB_DETECT_EN
 #include <linux/power_supply.h>
@@ -265,9 +264,6 @@ struct fts_ts_data {
     struct wakeup_source palm_gesture_read_wakelock;
 #endif
 #endif
-
-    struct pm_qos_request pm_spi_req;
-    struct pm_qos_request pm_touch_req;
 };
 
 /*****************************************************************************
