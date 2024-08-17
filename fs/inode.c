@@ -1553,25 +1553,31 @@ retry:
 }
 EXPORT_SYMBOL(iput);
 
+#ifdef CONFIG_BLOCK
 /**
  *	bmap	- find a block number in a file
- *	@inode: inode of file
- *	@block: block to find
+ *	@inode:  inode owning the block number being requested
+ *	@block: pointer containing the block to find
  *
- *	Returns the block number on the device holding the inode that
- *	is the disk block number for the block of the file requested.
- *	That is, asked for block 4 of inode 1 the function will return the
- *	disk block relative to the disk start that holds that block of the
- *	file.
+ *	Replaces the value in *block with the block number on the device holding
+ *	corresponding to the requested block number in the file.
+ *	That is, asked for block 4 of inode 1 the function will replace the
+ *	4 in *block, with disk block relative to the disk start that holds that
+ *	block of the file.
+ *
+ *	Returns -EINVAL in case of error, 0 otherwise. If mapping falls into a
+ *	hole, returns 0 and *block is also set to 0.
  */
-sector_t bmap(struct inode *inode, sector_t block)
+int bmap(struct inode *inode, sector_t *block)
 {
-	sector_t res = 0;
-	if (inode->i_mapping->a_ops->bmap)
-		res = inode->i_mapping->a_ops->bmap(inode->i_mapping, block);
-	return res;
+	if (!inode->i_mapping->a_ops->bmap)
+		return -EINVAL;
+
+	*block = inode->i_mapping->a_ops->bmap(inode->i_mapping, *block);
+	return 0;
 }
 EXPORT_SYMBOL(bmap);
+#endif
 
 /*
  * Update times in overlayed inode from underlying real inode
@@ -1674,6 +1680,34 @@ static int update_time(struct inode *inode, struct timespec *time, int flags)
 	return update_time(inode, time, flags);
 }
 
+static bool partial_relatime_needs_update(const struct path *path,
+	struct inode *inode)
+{
+	struct timespec now;
+
+	if (!(inode->i_flags & S_RELATIME))
+		return false;
+
+	now = current_time(inode);
+
+	if (timespec_compare(&inode->i_mtime, &inode->i_atime) >= 0) {
+		pr_debug("%s: %lu - younger mtime\n", __func__, inode->i_ino);
+		return true;
+	}
+
+	if (timespec_compare(&inode->i_ctime, &inode->i_atime) >= 0) {
+		pr_debug("%s: %lu - younger ctime\n", __func__, inode->i_ino);
+		return true;
+	}
+
+	if ((long)(now.tv_sec - inode->i_atime.tv_sec) >= 24*60*60) {
+		pr_debug("%s: %lu - atime older than a day\n", __func__,
+			inode->i_ino);
+		return true;
+	}
+
+	return false;
+}
 /**
  *	touch_atime	-	update the access time
  *	@path: the &struct path to update
@@ -1688,6 +1722,9 @@ bool __atime_needs_update(const struct path *path, struct inode *inode,
 {
 	struct vfsmount *mnt = path->mnt;
 	struct timespec now;
+
+	if (partial_relatime_needs_update(path, inode))
+		return true;
 
 	if (inode->i_flags & S_NOATIME)
 		return false;

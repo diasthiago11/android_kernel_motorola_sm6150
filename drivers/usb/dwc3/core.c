@@ -1223,6 +1223,8 @@ static void dwc3_get_properties(struct dwc3 *dwc)
 
 	device_property_read_u32(dev, "snps,xhci-imod-value",
 			&dwc->xhci_imod_value);
+	dwc->xhci_hw_lpm_disable = device_property_read_bool(dev,
+				"xhci-hw-lpm-disable");
 
 	dwc->core_id = -1;
 	device_property_read_u32(dev, "usb-core-id", &dwc->core_id);
@@ -1522,8 +1524,6 @@ static int dwc3_remove(struct platform_device *pdev)
 
 	pm_runtime_allow(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-	pm_runtime_put_noidle(&pdev->dev);
-	pm_runtime_set_suspended(&pdev->dev);
 
 	dwc3_free_event_buffers(dwc);
 	dwc3_free_scratch_buffers(dwc);

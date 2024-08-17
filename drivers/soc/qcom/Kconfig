@@ -2,6 +2,102 @@
 # QCOM Soc drivers
 #
 menu "Qualcomm SoC drivers"
+config MMI_DEVICE_DTBS
+	depends on ARCH_QCOM
+	default n
+	bool "Motorola Mobility Device DTBs"
+	help
+		Only include Motorola device specific DTBs to limit the number that
+		get built during kernel compilation.
+
+config FOLES_DTB
+	depends on ARCH_QCOM
+	default n
+	bool "Foles DTBs"
+	help
+	  Only include Foles specific DTBs to limit the number that
+	  get built during kernel compilation.
+
+config PARKER_DTB
+	depends on ARCH_QCOM
+	default n
+	bool "Parker DTBs"
+	help
+	  Only include Parker specific DTBs to limit the number that
+	  get built during kernel compilation.
+
+config DEF_DTB
+	depends on ARCH_QCOM
+	default n
+	bool "Def DTBs"
+	help
+	  Only include Def specific DTBs to limit the number that
+	  get built during kernel compilation.
+
+config LIBER_DTB
+	depends on ARCH_QCOM
+	default n
+	bool "Liber DTBs"
+	help
+	  Only include liber specific DTBs to limit the number that
+	  get built during kernel compilation.
+
+config HANOI_DTB
+	depends on ARCH_QCOM
+	default n
+	bool "Hanoi DTBs"
+	help
+	  Only include hanoi specific DTBs to limit the number that
+	  get built during kernel compilation.
+
+config HANOIP_DTB
+	depends on ARCH_QCOM
+	default n
+	bool "Hanoi plus DTBs"
+	help
+	  Only include hanoip specific DTBs to limit the number that
+	  get built during kernel compilation.
+
+config TACOMA_DTB
+	depends on ARCH_QCOM
+	default n
+	bool "Tacoma DTBs"
+	help
+	  Only include Tacoma specific DTBs to limit the number that
+	  get built during kernel compilation.
+
+config ODESSA_DTB
+	depends on ARCH_QCOM
+	default n
+	bool "Odessa DTBs"
+	help
+	  Only include odessa specific DTBs to limit the number that
+	  get built during kernel compilation.
+
+config BORNR_DTB
+	depends on ARCH_QCOM
+	default n
+	bool "Borneo Row DTBs"
+	help
+	  Only include Borneo Row specific DTBs to limit the number that
+	  get built during kernel compilation.
+
+config MINSK_DTB
+	depends on ARCH_QCOM
+	default n
+	bool "Minsk DTBs"
+	help
+	  Only include Minsk specific DTBs to limit the number that
+	  get built during kernel compilation.
+
+config QTPRO_DTB
+	depends on ARCH_QCOM
+	default n
+	bool "Qtpro DTBs"
+	help
+	  Only include Qtpro specific DTBs to limit the number that
+	  get built during kernel compilation.
+
 config QCOM_MEM_OFFLINE
 	bool "Dynamic Memory Region Offline driver"
 	help
@@ -768,6 +864,14 @@ config QTI_RPM_STATS_LOG
 	  the low power modes that RPM enters. The drivers outputs the message
 	  via a debugfs node.
 
+config MSM_ADSP_LOADER
+	tristate "ADSP loader support"
+	help
+	  Enable ADSP image loader.
+	  The ADSP loader brings ADSP out of reset
+	  for platforms that have ADSP.
+	  Say M if you want to enable this module.
+
 config MSM_CDSP_LOADER
 	tristate "CDSP loader support"
 	help
@@ -1085,6 +1189,14 @@ config QTI_CRYPTO_TZ
 	 performing hardware based file encryption. This means keys are
 	 programmed and managed through SCM calls to TZ where ICE driver
 	 will configure keys.
+
+config SUBSYS_BACKUP
+	bool "Subsystem Backup-Restore driver"
+	help
+	  This driver helps HLOS to backup-restore the remote subsystem image.
+	  This driver implements the QMI interface and responds to the backup
+	  and restore requests from the remote subsystem.
+
 endmenu
 
 config QCOM_HYP_CORE_CTL

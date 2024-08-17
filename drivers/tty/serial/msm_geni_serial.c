@@ -149,6 +149,8 @@
 		ipc_log_string(ctx, x); \
 } while (0)
 
+#define MSM_CONSOLE_NAME	"ttyMSM"
+
 #define DMA_RX_BUF_SIZE		(2048)
 #define UART_CONSOLE_RX_WM	(2)
 
@@ -509,6 +511,7 @@ static void wait_for_transfers_inflight(struct uart_port *uport)
 	int iter = 0;
 	struct msm_geni_serial_port *port = GET_DEV_PORT(uport);
 	unsigned int geni_status;
+	bool CTS, RX;
 
 	if (port->uart_ssr.is_ssr_down) {
 		IPC_LOG_MSG(port->ipc_log_misc, "%s: SSR Down event set\n",
@@ -538,10 +541,12 @@ static void wait_for_transfers_inflight(struct uart_port *uport)
 							SE_GENI_RX_FIFO_STATUS);
 		u32 rx_dma =
 			geni_read_reg_nolog(uport->membase, SE_DMA_RX_LEN_IN);
+		CTS = geni_ios & BIT(1); // b[1] = UART CTS <- Peer RFR
+		RX = geni_ios & BIT(0);  // b[0] = UART RX <- Peer TX
 
 		IPC_LOG_MSG(port->ipc_log_misc,
-			"%s IOS 0x%x geni status 0x%x rx: fifo 0x%x dma 0x%x\n",
-		__func__, geni_ios, geni_status, rx_fifo_status, rx_dma);
+		"%s: geni=0x%x rx_fifo=0x%x rx_dma=0x%x, CTS_IO=%d, RX_IO=%d\n",
+		 __func__, geni_status, rx_fifo_status, rx_dma, CTS, RX);
 	}
 }
 
@@ -1887,7 +1892,7 @@ static int msm_geni_serial_handle_dma_tx(struct uart_port *uport)
 		 */
 		if (!uart_console(uport)) {
 			IPC_LOG_MSG(msm_port->ipc_log_misc,
-				"%s.Power Off.\n", __func__);
+				"%s.Tx sent out, Power off\n", __func__);
 			msm_geni_serial_power_off(uport);
 		}
 		uart_write_wakeup(uport);
@@ -2823,6 +2828,13 @@ static void msm_geni_serial_cancel_rx(struct uart_port *uport)
 						GENI_FORCE_DEFAULT_REG);
 }
 
+static int
+msm_geni_serial_early_console_match(struct console *con, char *name, int idx,
+				    char *options)
+{
+	return (!name || strcmp(MSM_CONSOLE_NAME, name));
+}
+
 static int __init
 msm_geni_serial_earlycon_setup(struct earlycon_device *dev,
 		const char *opt)
@@ -2923,6 +2935,7 @@ msm_geni_serial_earlycon_setup(struct earlycon_device *dev,
 	geni_write_reg_nolog(s_clk_cfg, uport->membase, GENI_SER_S_CLK_CFG);
 
 	dev->con->write = msm_geni_serial_early_console_write;
+	dev->con->match = msm_geni_serial_early_console_match;
 	dev->con->setup = NULL;
 	/*
 	 * Ensure that the early console setup completes before
@@ -2945,7 +2958,7 @@ static void console_unregister(struct uart_driver *drv)
 }
 
 static struct console cons_ops = {
-	.name = "ttyMSM",
+	.name = MSM_CONSOLE_NAME,
 	.write = msm_geni_serial_console_write,
 	.device = uart_console_device,
 	.setup = msm_geni_console_setup,

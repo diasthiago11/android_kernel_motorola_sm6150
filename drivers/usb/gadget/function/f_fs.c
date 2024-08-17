@@ -269,7 +269,8 @@ static void ffs_closed(struct ffs_data *ffs);
 
 static int ffs_mutex_lock(struct mutex *mutex, unsigned nonblock)
 	__attribute__((warn_unused_result, nonnull));
-static char *ffs_prepare_buffer(const char __user *buf, size_t len)
+static char *ffs_prepare_buffer(const char __user *buf, size_t len,
+	size_t extra_buf_alloc)
 	__attribute__((warn_unused_result, nonnull));
 
 
@@ -283,6 +284,7 @@ static void ffs_ep0_complete(struct usb_ep *ep, struct usb_request *req)
 }
 
 static int __ffs_ep0_queue_wait(struct ffs_data *ffs, char *data, size_t len)
+	__releases(&ffs->ev.waitq.lock)
 {
 	struct usb_request *req = ffs->ep0req;
 	int ret;
@@ -350,6 +352,7 @@ static ssize_t ffs_ep0_write(struct file *file, const char __user *buf,
 			     size_t len, loff_t *ptr)
 {
 	struct ffs_data *ffs = file->private_data;
+	struct usb_gadget *gadget = ffs->gadget;
 	ssize_t ret;
 	char *data;
 
@@ -377,7 +380,7 @@ static ssize_t ffs_ep0_write(struct file *file, const char __user *buf,
 			break;
 		}
 
-		data = ffs_prepare_buffer(buf, len);
+		data = ffs_prepare_buffer(buf, len, 0);
 		if (IS_ERR(data)) {
 			ret = PTR_ERR(data);
 			break;
@@ -449,7 +452,7 @@ static ssize_t ffs_ep0_write(struct file *file, const char __user *buf,
 
 		spin_unlock_irq(&ffs->ev.waitq.lock);
 
-		data = ffs_prepare_buffer(buf, len);
+		data = ffs_prepare_buffer(buf, len, gadget->extra_buf_alloc);
 		if (IS_ERR(data)) {
 			ret = PTR_ERR(data);
 			break;
@@ -496,6 +499,7 @@ done_spin:
 /* Called with ffs->ev.waitq.lock and ffs->mutex held, both released on exit. */
 static ssize_t __ffs_ep0_read_events(struct ffs_data *ffs, char __user *buf,
 				     size_t n)
+	__releases(&ffs->ev.waitq.lock)
 {
 	/*
 	 * n cannot be bigger than ffs->ev.count, which cannot be bigger than
@@ -588,6 +592,7 @@ static ssize_t ffs_ep0_read(struct file *file, char __user *buf,
 			break;
 		}
 
+		/* unlocks spinlock */
 		return __ffs_ep0_read_events(ffs, buf,
 					     min(n, (size_t)ffs->ev.count));
 
@@ -950,6 +955,7 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 	char *data = NULL;
 	ssize_t ret, data_len = -EINVAL;
 	int halt;
+	size_t extra_buf_alloc = 0;
 
 	ffs_log("enter: %s", epfile->name);
 
@@ -1028,7 +1034,12 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 			data_len = usb_ep_align_maybe(gadget, ep->ep, data_len);
 		spin_unlock_irq(&epfile->ffs->eps_lock);
 
-		data = kmalloc(data_len, GFP_KERNEL);
+		extra_buf_alloc = gadget->extra_buf_alloc;
+		if (!io_data->read)
+			data = kmalloc(data_len + extra_buf_alloc,
+					GFP_KERNEL);
+		else
+			data = kmalloc(data_len, GFP_KERNEL);
 		if (unlikely(!data)) {
 			ret = -ENOMEM;
 			goto error_mutex;
@@ -1105,6 +1116,8 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 				spin_unlock_irq(&epfile->ffs->eps_lock);
 			}
 		}
+
+		ffs_log("ep status %d for req %pK", ep->status, req);
 
 		if (interrupted) {
 			ret = -EINTR;
@@ -1416,7 +1429,7 @@ static long ffs_epfile_ioctl(struct file *file, unsigned code,
 		memcpy(&desc1, desc, desc->bLength);
 
 		spin_unlock_irq(&epfile->ffs->eps_lock);
-		ret = copy_to_user((void *)value, &desc1, desc1.bLength);
+		ret = copy_to_user((void __user *)value, desc, desc->bLength);
 		if (ret)
 			ret = -EFAULT;
 		return ret;
@@ -2605,7 +2618,7 @@ static int __ffs_data_do_os_desc(enum ffs_os_desc_type type,
 				  length, pnl, type);
 			return -EINVAL;
 		}
-		pdl = le32_to_cpu(*(u32 *)((u8 *)data + 10 + pnl));
+		pdl = le32_to_cpu(*(__le32 *)((u8 *)data + 10 + pnl));
 		if (length != 14 + pnl + pdl) {
 			pr_vdebug("invalid os descriptor length: %d pnl:%d pdl:%d (descriptor %d)\n",
 				  length, pnl, pdl, type);
@@ -3180,7 +3193,7 @@ static int __ffs_func_bind_do_os_desc(enum ffs_os_desc_type type,
 
 		ext_prop->type = le32_to_cpu(desc->dwPropertyDataType);
 		ext_prop->name_len = le16_to_cpu(desc->wPropertyNameLength);
-		ext_prop->data_len = le32_to_cpu(*(u32 *)
+		ext_prop->data_len = le32_to_cpu(*(__le32 *)
 			usb_ext_prop_data_len_ptr(data, ext_prop->name_len));
 		length = ext_prop->name_len + ext_prop->data_len + 14;
 
@@ -4100,14 +4113,23 @@ static int ffs_mutex_lock(struct mutex *mutex, unsigned nonblock)
 		: mutex_lock_interruptible(mutex);
 }
 
-static char *ffs_prepare_buffer(const char __user *buf, size_t len)
+/**
+ * ffs_prepare_buffer() - copy userspace buffer into kernel.
+ * @buf: userspace buffer
+ * @len: length of the buffer
+ * @extra_alloc_buf: Extra buffer allocation if required by UDC.
+ *
+ * This function returns pointer to the copied buffer
+ */
+static char *ffs_prepare_buffer(const char __user *buf, size_t len,
+		size_t extra_buf_alloc)
 {
 	char *data;
 
 	if (unlikely(!len))
 		return NULL;
 
-	data = kmalloc(len, GFP_KERNEL);
+	data = kmalloc(len + extra_buf_alloc, GFP_KERNEL);
 	if (unlikely(!data))
 		return ERR_PTR(-ENOMEM);
 

@@ -187,6 +187,7 @@ struct spi_geni_master {
 	struct spi_geni_ssr spi_ssr;
 	bool set_miso_sampling;
 	u32 miso_sampling_ctrl_val;
+	bool use_fixed_timeout;
 };
 
 static void spi_slv_setup(struct spi_geni_master *mas);
@@ -896,11 +897,19 @@ static int spi_geni_prepare_transfer_hardware(struct spi_master *spi)
 		int ret = 0;
 
 		rsc = &mas->spi_rsc;
-		ret = pinctrl_select_state(rsc->geni_pinctrl,
-						rsc->geni_gpio_active);
-		if (ret)
-			GENI_SE_ERR(mas->ipc, false, NULL,
-			"%s: Error %d pinctrl_select_state\n", __func__, ret);
+		if (!rsc->without_pinctrl) {
+			ret = pinctrl_select_state(rsc->geni_pinctrl,
+							rsc->geni_gpio_active);
+			if (ret)
+				GENI_SE_ERR(mas->ipc, false, NULL,
+				"%s: Error %d pinctrl_select_state\n", __func__, ret);
+		}
+	}
+
+	if (mas->dev->power.disable_depth > 0) {
+		dev_err(mas->dev, "%s:disable_depth not zero %d\n",
+					__func__, mas->dev->power.disable_depth);
+		pm_runtime_enable(mas->dev);
 	}
 
 	ret = pm_runtime_get_sync(mas->dev);
@@ -1110,11 +1119,13 @@ static int spi_geni_unprepare_transfer_hardware(struct spi_master *spi)
 		int ret = 0;
 
 		rsc = &mas->spi_rsc;
-		ret = pinctrl_select_state(rsc->geni_pinctrl,
-						rsc->geni_gpio_sleep);
-		if (ret)
-			GENI_SE_ERR(mas->ipc, false, NULL,
-			"%s: Error %d pinctrl_select_state\n", __func__, ret);
+		if (!rsc->without_pinctrl) {
+			ret = pinctrl_select_state(rsc->geni_pinctrl,
+							rsc->geni_gpio_sleep);
+			if (ret)
+				GENI_SE_ERR(mas->ipc, false, NULL,
+				"%s: Error %d pinctrl_select_state\n", __func__, ret);
+		}
 	}
 
 	if (mas->dis_autosuspend) {
@@ -1211,6 +1222,9 @@ static int setup_fifo_xfer(struct spi_transfer *xfer,
 	 */
 	if (mas->disable_dma_mode) {
 		mas->cur_xfer_mode = FIFO_MODE;
+		geni_se_select_mode(mas->base, mas->cur_xfer_mode);
+	} else if (spi->slave) {
+		mas->cur_xfer_mode = SE_DMA;
 		geni_se_select_mode(mas->base, mas->cur_xfer_mode);
 	} else {
 		fifo_size = (mas->tx_fifo_depth *
@@ -1339,7 +1353,7 @@ static int spi_geni_transfer_one(struct spi_master *spi,
 {
 	int ret = 0;
 	struct spi_geni_master *mas = spi_master_get_devdata(spi);
-	unsigned long timeout;
+	unsigned long timeout, xfer_timeout;
 
 	if ((xfer->tx_buf == NULL) && (xfer->rx_buf == NULL)) {
 		dev_err(mas->dev, "Invalid xfer both tx rx are NULL\n");
@@ -1351,6 +1365,15 @@ static int spi_geni_transfer_one(struct spi_master *spi,
 		dev_err(mas->dev, "Zero length transfer\n");
 		return -EINVAL;
 	}
+
+	if (mas->use_fixed_timeout)
+		xfer_timeout = msecs_to_jiffies(SPI_XFER_TIMEOUT_MS);
+	else
+		xfer_timeout =
+			100 * msecs_to_jiffies(DIV_ROUND_UP(xfer->len * 8,
+				DIV_ROUND_UP(xfer->speed_hz, MSEC_PER_SEC)));
+	GENI_SE_DBG(mas->ipc, false, mas->dev,
+			"current xfer_timeout:%lu ms.\n", xfer_timeout);
 
 	mutex_lock(&mas->spi_ssr.ssr_lock);
 	if (mas->spi_ssr.is_ssr_down || !mas->spi_ssr.xfer_prepared) {
@@ -1372,7 +1395,7 @@ static int spi_geni_transfer_one(struct spi_master *spi,
 			spi->slave_state = true;
 		mutex_unlock(&mas->spi_ssr.ssr_lock);
 		timeout = wait_for_completion_timeout(&mas->xfer_done,
-					msecs_to_jiffies(SPI_XFER_TIMEOUT_MS));
+				xfer_timeout);
 		mutex_lock(&mas->spi_ssr.ssr_lock);
 		if (mas->spi_ssr.is_ssr_down)
 			goto err_ssr_transfer_one;
@@ -1419,10 +1442,8 @@ static int spi_geni_transfer_one(struct spi_master *spi,
 			int i;
 
 			for (i = 0 ; i < mas->num_tx_eot; i++) {
-				timeout =
-				wait_for_completion_timeout(
-					&mas->tx_cb,
-					msecs_to_jiffies(SPI_XFER_TIMEOUT_MS));
+				timeout = wait_for_completion_timeout(
+					&mas->tx_cb, xfer_timeout);
 				if (timeout <= 0) {
 					GENI_SE_ERR(mas->ipc, true, mas->dev,
 					"Tx[%d] timeout%lu\n", i, timeout);
@@ -1431,10 +1452,8 @@ static int spi_geni_transfer_one(struct spi_master *spi,
 				}
 			}
 			for (i = 0 ; i < mas->num_rx_eot; i++) {
-				timeout =
-				wait_for_completion_timeout(
-					&mas->rx_cb,
-					msecs_to_jiffies(SPI_XFER_TIMEOUT_MS));
+				timeout = wait_for_completion_timeout(
+					&mas->rx_cb, xfer_timeout);
 				if (timeout <= 0) {
 					GENI_SE_ERR(mas->ipc, true, mas->dev,
 					 "Rx[%d] timeout%lu\n", i, timeout);
@@ -1714,28 +1733,42 @@ static int spi_geni_probe(struct platform_device *pdev)
 		goto spi_geni_probe_err;
 	}
 
-	geni_mas->spi_rsc.ctrl_dev = geni_mas->dev;
-	rsc->geni_pinctrl = devm_pinctrl_get(&pdev->dev);
-	if (IS_ERR_OR_NULL(rsc->geni_pinctrl)) {
-		dev_err(&pdev->dev, "No pinctrl config specified!\n");
-		ret = PTR_ERR(rsc->geni_pinctrl);
-		goto spi_geni_probe_err;
+        geni_mas->spi_rsc.ctrl_dev = geni_mas->dev;
+	
+	rsc->without_pinctrl = of_property_read_bool(pdev->dev.of_node,
+					"mmi,without-pinctrl");
+	if (rsc->without_pinctrl) {
+		dev_err(&pdev->dev, "%s without pinctrl\n", __func__);
+		rsc->geni_pinctrl = NULL;
+		rsc->geni_gpio_active = NULL;
+		rsc->geni_gpio_sleep = NULL;
+	} else {
+		dev_err(&pdev->dev, "%s with pinctrl\n", __func__);
 	}
 
-	rsc->geni_gpio_active = pinctrl_lookup_state(rsc->geni_pinctrl,
-							PINCTRL_DEFAULT);
-	if (IS_ERR_OR_NULL(rsc->geni_gpio_active)) {
-		dev_err(&pdev->dev, "No default config specified!\n");
-		ret = PTR_ERR(rsc->geni_gpio_active);
-		goto spi_geni_probe_err;
-	}
+	if (!rsc->without_pinctrl) {
+		rsc->geni_pinctrl = devm_pinctrl_get(&pdev->dev);
+		if (IS_ERR_OR_NULL(rsc->geni_pinctrl)) {
+			dev_err(&pdev->dev, "No pinctrl config specified!\n");
+			ret = PTR_ERR(rsc->geni_pinctrl);
+			goto spi_geni_probe_err;
+		}
 
-	rsc->geni_gpio_sleep = pinctrl_lookup_state(rsc->geni_pinctrl,
-							PINCTRL_SLEEP);
-	if (IS_ERR_OR_NULL(rsc->geni_gpio_sleep)) {
-		dev_err(&pdev->dev, "No sleep config specified!\n");
-		ret = PTR_ERR(rsc->geni_gpio_sleep);
-		goto spi_geni_probe_err;
+		rsc->geni_gpio_active = pinctrl_lookup_state(rsc->geni_pinctrl,
+								PINCTRL_DEFAULT);
+		if (IS_ERR_OR_NULL(rsc->geni_gpio_active)) {
+			dev_err(&pdev->dev, "No default config specified!\n");
+			ret = PTR_ERR(rsc->geni_gpio_active);
+			goto spi_geni_probe_err;
+		}
+
+		rsc->geni_gpio_sleep = pinctrl_lookup_state(rsc->geni_pinctrl,
+								PINCTRL_SLEEP);
+		if (IS_ERR_OR_NULL(rsc->geni_gpio_sleep)) {
+			dev_err(&pdev->dev, "No sleep config specified!\n");
+			ret = PTR_ERR(rsc->geni_gpio_sleep);
+			goto spi_geni_probe_err;
+		}
 	}
 
 	geni_mas->disable_dma_mode = of_property_read_bool(pdev->dev.of_node,
@@ -1800,7 +1833,9 @@ static int spi_geni_probe(struct platform_device *pdev)
 	geni_mas->dis_autosuspend =
 		of_property_read_bool(pdev->dev.of_node,
 				"qcom,disable-autosuspend");
-
+	geni_mas->use_fixed_timeout =
+		of_property_read_bool(pdev->dev.of_node,
+				"qcom,use-fixed-timeout");
 	geni_mas->set_miso_sampling = of_property_read_bool(pdev->dev.of_node,
 				"qcom,set-miso-sampling");
 	if (geni_mas->set_miso_sampling) {
@@ -1950,7 +1985,7 @@ static int spi_geni_resume(struct device *dev)
 static int spi_geni_suspend(struct device *dev)
 {
 	int ret = 0;
-
+#if 0
 	if (!pm_runtime_status_suspended(dev)) {
 		struct spi_master *spi = get_spi_master(dev);
 		struct spi_geni_master *geni_mas = spi_master_get_devdata(spi);
@@ -1971,6 +2006,10 @@ static int spi_geni_suspend(struct device *dev)
 			ret = -EBUSY;
 		}
 	}
+#else
+	if (!pm_runtime_status_suspended(dev))
+		ret = -EBUSY;
+#endif
 	return ret;
 }
 #else

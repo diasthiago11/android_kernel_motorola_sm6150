@@ -1030,14 +1030,9 @@ static struct kgsl_process_private *kgsl_process_private_new(
 	list_for_each_entry(private, &kgsl_driver.process_list, list) {
 		if (private->pid == cur_pid) {
 			if (!kgsl_process_private_get(private)) {
+				put_pid(cur_pid);
 				private = ERR_PTR(-EINVAL);
 			}
-			/*
-			 * We need to hold only one reference to the PID for
-			 * each process struct to avoid overflowing the
-			 * reference counter which can lead to use-after-free.
-			 */
-			put_pid(cur_pid);
 			return private;
 		}
 	}
@@ -2426,12 +2421,7 @@ static int kgsl_setup_anon_useraddr(struct kgsl_pagetable *pagetable,
 		entry->memdesc.gpuaddr = (uint64_t) hostptr;
 	}
 
-	ret = memdesc_sg_virt(&entry->memdesc, hostptr);
-
-	if (ret && kgsl_memdesc_use_cpu_map(&entry->memdesc))
-		kgsl_mmu_put_gpuaddr(&entry->memdesc);
-
-	return ret;
+	return memdesc_sg_virt(&entry->memdesc, hostptr);
 }
 
 #ifdef CONFIG_DMA_SHARED_BUFFER

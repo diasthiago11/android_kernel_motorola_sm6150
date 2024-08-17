@@ -466,13 +466,21 @@
 			compatible = "android,firmware";
 			vbmeta {
 				compatible = "android,vbmeta";
-				parts = "vbmeta,boot,system,vendor,dtbo";
+				parts = "vbmeta,boot,system,vendor,dtbo,oem";
 			};
 			fstab {
 				compatible = "android,fstab";
 				vendor {
 					compatible = "android,vendor";
 					dev = "/dev/block/platform/soc/1d84000.ufshc/by-name/vendor";
+					type = "ext4";
+					mnt_flags = "ro,barrier=1,discard";
+					fsmgr_flags = "wait,slotselect,avb";
+					status = "ok";
+				};
+				oem {
+					compatible = "android,oem";
+					dev = "/dev/block/platform/soc/1d84000.ufshc/by-name/oem";
 					type = "ext4";
 					mnt_flags = "ro,barrier=1,discard";
 					fsmgr_flags = "wait,slotselect,avb";
@@ -646,12 +654,12 @@
 		};
 
 		/* global autoconfigured region for contiguous allocations */
-		linux,cma {
+		linux_cma: linux,cma {
 			compatible = "shared-dma-pool";
 			alloc-ranges = <0 0x00000000 0 0xffffffff>;
 			reusable;
 			alignment = <0 0x400000>;
-			size = <0 0x2800000>;
+			size = <0 0x2000000>;
 			linux,cma-default;
 		};
 	};
@@ -1559,6 +1567,15 @@
 		qcom,qsee-reentrancy-support = <2>;
 	};
 
+	mcd {
+		compatible = "qcom,mcd";
+		qcom,ce-hw-instance = <0>;
+		qcom,ce-device = <0>;
+		interrupts = <0 472 0>;
+		interrupt-names = "mcd_irq";
+		qcom,no-clock-support;
+	};
+
 	qcom_smcinvoke: smcinvoke@86d00000 {
 		compatible = "qcom,smcinvoke";
 		reg = <0x86d00000 0xe00000>;
@@ -1630,7 +1647,7 @@
 
 		lanes-per-direction = <1>;
 		dev-ref-clk-freq = <0>; /* 19.2 MHz */
-		spm-level = <5>;
+		spm-level = <3>;
 
 		clock-names =
 			"core_clk",
@@ -1795,6 +1812,7 @@
 
 	bluetooth: bt_wcn3990 {
 		compatible = "qca,wcn3990";
+		qca,bt-sw-ctrl-gpio = <&tlmm 102 0>; /* SW_CTRL */
 		qca,bt-vdd-core-supply = <&pm6150l_l1>;
 		qca,bt-vdd-pa-supply = <&pm6150l_l2>;
 		qca,bt-vdd-ldo-supply = <&pm6150l_l10>;
@@ -3228,6 +3246,7 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&fsa_usbc_ana_en>;
 	};
+	
 };
 
 #include "sm6150-camera.dtsi"
